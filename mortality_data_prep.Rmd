@@ -1,0 +1,405 @@
+---
+title: "mortality data prep"
+author: "Thomas Benacci"
+date: "2025-11-13"
+output: html_document
+---
+
+### Libraries
+```{r}
+library(haven)
+library(tidyverse)
+```
+### Read in Data
+```{r}
+## MIDUS Core Surveys ##
+# In 1995/96, the MacArthur Midlife Research Network conducted the MIDUS 1 (M1) survey on a national sample of over 7,000 Americans aged 25 to 74. This sample included sub-samples of Siblings and Twin Pairs.
+Survey_1 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS 1 Core/M1_P1_SURVEY_N7108_20190116.sav")
+# In 2004/05, MIDUS 2 (M2) Project 1 provided follow-up on the psychosocial, sociodemographic, and health variables assessed in MIDUS 1.
+Survey_2 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS 2 Core/M2_P1_SURVEY_N4963_20200720.sav")
+# In 2013, MIDUS began the 3rd wave (M3) of survey data collection on MIDUS longitudinal participants. Project 1 provided follow up on the demographic, psychosocial, and health measures assessed at M1 and M2, while adding new measures to examine the impact of the Great Recession.
+Survey_3 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS 3 Core/M3_P1_SURVEY_N3294_20181219.sav")
+## MIDUS Refresher Surveys ##
+#	In 2011, MIDUS began data collection on a new national sample of American adults aged 25-74 to "refresh" the Core MIDUS cohort and to examine the health impacts of the Great Recession. This dataset contains survey data for the MIDUS Refresher baseline (MR1) sample.
+RefreshSurvey_1 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS Refresher 1/MR1_P1_SURVEY_N3577_20250407.sav")
+# In 2022, MIDUS began the 2nd wave (MR2) of survey data collection on MIDUS Refresher participants. This dataset provided follow up on the demographic, psychosocial, and health measures assessed at MR1, while adding new measures to examine the impact of the COVID-19 pandemic.
+RefreshSurvey_2 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS Refresher 2/MR2_P1_SURVEY_N2154_20251003.sav")
+## MIDUS Mortality ##
+#	MIDUS regularly updates the mortality status of MIDUS Core sample participants. See associated documentation for details.
+# The mortality dataset is a flat file containing 2,533 deceased cases, and it contains 55 variables that can be linked to other Core MIDUS datasets via the M2ID.  
+Mortality_1 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS Mortality/MIDUS_Core_MortalityCauseData_N2533_20250204.sav")
+#	MIDUS regularly updates the mortality status of MIDUS Refresher sample participants. See associated documentation for details.
+# This mortality dataset is a flat file containing 364 confirmed decedents and 46 variables that can be combined with or linked to other MIDUS Refresher datasets via the MRID variable.  
+Mortality_2 <- read_sav("F:/predicting_mortality/MIDUS/MIDUS Mortality/MIDUS_Refresher_MortalityCauseData_N364_20250219.sav")
+```
+### Merge Survey 1 with Mortality 1
+```{r}
+# merge mortality data with original survey data
+data <- merge(
+  zap_labels(Survey_1), 
+  zap_labels(Mortality_1),
+  all.x = T
+  )
+# remove unnecessary data
+rm(Survey_2); rm(Survey_3)
+rm(RefreshSurvey_1); rm(RefreshSurvey_2)
+rm(Mortality_2)
+```
+### Columns to Keep
+```{r}
+# columns from survey 1 to keep
+# see Predicting mortality from 57 economic, behavioral, social, and psychological factors variable description file for details
+data_cols <- c(
+  # Participant Identification
+  "M2ID", "M2FAMNUM", "SAMPLMAJ", 
+  # Demographic
+  "A1PAGE_M2", # Age at time of 1995/96 survey
+  "DECEASED", # Deceased status
+  "A1PBYEAR_2019", # Birth Year
+  "DOD_Y", # Mortality Year
+  "A1PRSEX", # Sex
+  "A1SS7", # Race
+  "A1SE2", # Foreign Born
+  # Childhood Adversity
+  "A1POCDMJ", # Lower Father Occupational Status
+  "A1POCMMJ", # Lower Mother Occupational Status
+  "A1PC2", # Lower Education Father
+  "A1PC8", # Lower Education Mother
+  # Adult Socioeconomic
+  "A1SHHTOT", # Lower Income
+  "A1SJ15", # Lower Wealth
+  "A1PEDUCP", # Lower Education
+  "A1POCMJ", # Lower Occupational Status
+  "A1SJ7", # Recent Financial Difficulties
+  "A1PB3C", "A1SI1I1", # History of Unemployment
+  "A1SL4", # History of Renting
+  "A1SC1G", # History of Medicaid
+  "A1SHOMET", # Lower Neighborhood Cohesion
+  # Adult Health Behaviors
+  "A1SA9U", # Alcohol Abuse
+  "A1PA43", # Current Smoker
+  "A1PA40", # History of Smoking
+  "A1SMODER", # Low/No Moderate Activity
+  "A1SVIGOR", # Low/No Vigorous Activity
+  "A1SA12G", # Sleep Problems
+  # Adulthood Social Connections
+  "A1PB17", # History of Divorce, Never Married
+  "A1PB20", # History of Divorce
+  "A1SKINPO", # Lower Positive Interactions with Family
+  "A1SKINNE", # Negative Interactions with Family
+  "A1SFDSPO", # Lower Positive Interactions with Friends
+  "A1SFDSNE", # Negative Interactions with Friends
+  # Adulthood Psychological
+  "A1SAGREE", # Lower Agreeableness
+  "A1SEXTRA", # Lower Extroversion
+  "A1SNEURO", # Lower Neuroticism
+  "A1SCONS", # Lower Conscientiousness
+  "A1SOPEN", # Lower Openness to Experiences
+  "A1SA13D", #Hopelessness
+  "A1PD1", # Lower Life Satisfaction
+  "A1PD7", # Lower Optimism
+  "A1SPOSAF", # Lower Positive Affectivity
+  "A1SNEGAF", # Negative Affectivity
+  "A1SPWBU", # Lower Purpose in Life
+  "A1SR2A", # Lower Religiosity
+  "A1SPWBE", # Lower Sense of Mastery
+  # Adulthood Adverse Experiences
+  "A1SS14A", "A1SS14B", "A1SS14C", "A1SS14D", "A1SS14E", "A1SS14I", # Daily Discrimination
+  "A1SS13E", "A1SS13C", "A1SS13D", "A1SS13F", "A1SS13I", "A1SS13H" # Major Discrimination
+)
+# select only necessary columns
+data <- data %>%
+  select(all_of(data_cols))
+```
+### Answer Necessary Survey Qs and Add My Data
+```{r}
+my_data <- c(
+  
+)
+```
+### Characteristic Creation
+```{r}
+#
+zscore_median_impute <- function(x){
+  z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+  med <- median(z, na.rm = TRUE)
+  z[is.na(z)] <- med
+  return(z)
+}
+
+# see Table S7. Comparison of variables between the Health and Retirement Study (HRS) and the Midlife in the United States (MIDUS) study for Harmonization 
+data <- data %>%
+  mutate(
+    # target
+    DECEASED = case_when( # binary deceased indicator (1: decreased, 0: alive)
+      DECEASED == 1 ~ 1,
+      T ~ 0
+    ),
+    Max_Age = case_when( # max recorded living age per participant
+      DECEASED == 1 ~ DOD_Y - A1PBYEAR_2019,
+      DECEASED == 0 ~ 2023 - A1PBYEAR_2019
+    ),
+    # demographic
+    char_Age = zscore_median_impute(A1PAGE_M2),
+    char_Male = case_when(
+      A1PRSEX == 1 ~ 1,
+      T ~ -1
+    ),
+    char_Black = case_when(
+      A1SS7 == 2 ~ 1, 
+      T ~ -1
+    ),
+    char_ForeignBorn = case_when(
+      A1SE2 == 1 ~ 1, 
+      T ~ -1
+    ),
+    # Childhood Adversity
+    char_LowFatherOccStat = case_when(
+      A1POCDMJ %in% c(3, 6, 7, 8, 9) ~ 1,
+      T ~ -1
+    ),
+    char_LowMotherOccStat = case_when(
+      A1POCMMJ %in% c(3, 6, 7, 8, 9) ~ 1,
+      T ~ -1
+    ),
+    char_LowFatherEdu = case_when( # impute NA values with the median after z-scoring
+      A1PC2 %in% c(1, 2, 3) ~ 3,
+      A1PC2 %in% c(4, 5) ~ 2,
+      A1PC2 %in% c(6, 7, 8) ~ 1,
+      A1PC2 %in% c(9, 10, 11, 12) ~ 0,
+      T ~ NA
+    ),
+    char_LowFatherEdu = zscore_median_impute(char_LowFatherEdu), # z-scored and median imputed
+    char_LowMotherEdu = case_when( # impute NA values with the median after z-scoring
+      A1PC8 %in% c(1, 2, 3) ~ 3,
+      A1PC8 %in% c(4, 5) ~ 2,
+      A1PC8 %in% c(6, 7, 8) ~ 1,
+      A1PC8 %in% c(9, 10, 11, 12) ~ 0,
+      T ~ NA
+    ), 
+    char_LowMotherEdu = zscore_median_impute(char_LowMotherEdu), # z-scored and median imputed
+    # Adulthood Socioeconomic
+    rev_A1SHHTOT = (300000 + 1) - A1SHHTOT, # reverse coded
+    char_LowerIncome = zscore_median_impute(rev_A1SHHTOT), # z-scored and median imputed
+    char_LowerWealth = case_when(
+      A1SJ15 == 1 ~ 36,
+      A1SJ15 == 2 ~ 35,
+      A1SJ15 == 3 ~ 34, 
+      A1SJ15 == 4 ~ 33,
+      A1SJ15 == 5 ~ 32,
+      A1SJ15 == 6 ~ 31,
+      A1SJ15 == 7 ~ 30,
+      A1SJ15 == 8 ~ 29,
+      A1SJ15 == 9 ~ 28,
+      A1SJ15 == 10 ~ 27,
+      A1SJ15 == 11 ~ 26,
+      A1SJ15 == 12 ~ 25,
+      A1SJ15 == 13 ~ 24,
+      A1SJ15 == 14 ~ 23,
+      A1SJ15 == 15 ~ 22,
+      A1SJ15 == 16 ~ 21,
+      A1SJ15 == 17 ~ 20,
+      A1SJ15 == 18 ~ 19,
+      A1SJ15 == 19 ~ 18,
+      A1SJ15 == 20 ~ 17,
+      A1SJ15 == 21 ~ 16,
+      A1SJ15 == 22 ~ 15,
+      A1SJ15 == 23 ~ 14,
+      A1SJ15 == 24 ~ 13,
+      A1SJ15 == 25 ~ 12,
+      A1SJ15 == 26 ~ 11,
+      A1SJ15 == 27 ~ 10,
+      A1SJ15 == 28 ~ 9,
+      A1SJ15 == 29 ~ 8,
+      A1SJ15 == 30 ~ 7,
+      A1SJ15 == 31 ~ 6,
+      A1SJ15 == 32 ~ 5,
+      A1SJ15 == 33 ~ 4,
+      A1SJ15 == 34 ~ 3,
+      A1SJ15 == 35 ~ 2,
+      A1SJ15 == 36 ~ 1,
+      T ~ NA
+    ),
+    char_LowerWealth = zscore_median_impute(char_LowerWealth), # z-scored and median imputed
+    char_LowerEdu = case_when(
+      A1PEDUCP == 1 ~ 4,
+      A1PEDUCP == 2 ~ 3,
+      A1PEDUCP == 3 ~ 2,
+      A1PEDUCP == 4 ~ 1,
+      T ~ NA
+    ),
+    char_LowerEdu = zscore_median_impute(char_LowerEdu), # z-scored and median imputed
+    char_LowerOccStat = case_when(
+      A1POCMJ %in% c(3, 6, 7, 8, 9) ~ 1,
+      T ~ -1
+    ),
+    char_RecentFinDiff = case_when(
+      A1SJ7 == 1 ~ 4,
+      A1SJ7 == 2 ~ 3, 
+      A1SJ7 == 3 ~ 2,
+      A1SJ7 == 4 ~ 1,
+      T ~ NA
+    ),
+    char_RecentFinDiff = zscore_median_impute(char_RecentFinDiff), # z-scored and median imputed
+    char_HistOfUnemployment = case_when(
+      A1PB3C == 1 | A1SI1I1 == 1 ~ 1,
+      T ~ -1
+    ),
+    char_HistofRenting = case_when(
+      A1SL4 == 3 ~ 1,
+      T ~ -1
+    ),
+    char_HistOfMedicaid = case_when(
+      A1SC1G == 1 ~ 1,
+      T ~ -1
+    ), 
+    rev_A1SHOMET = (4 + 1) - A1SHOMET, # reverse coded
+    char_LowNeighborCohesion = zscore_median_impute(rev_A1SHOMET), # z-scored and median imputed
+    char_AlcoholAbuse = case_when(
+      A1SA9U == 1 ~ 1,
+      T ~ -1
+    ),
+    char_CurrentSmoker = case_when(
+      A1PA43 == 1 ~ 1, 
+      T ~ -1
+    ),
+    char_HistOfSmoking = case_when(
+      A1PA40 == 1 ~ 1,
+      T ~ -1
+    ),
+    char_LowNoModActivity = case_when(
+      A1SMODER <= 4 ~ 1,
+      T ~ -1
+    ),
+    char_LowNoVigActivity = case_when(
+      A1SVIGOR <= 4 ~ 1,
+      T ~ -1
+    ),
+    char_SleepProblems = case_when(
+      A1SA12G == 1 ~ 6,
+      A1SA12G == 2 ~ 5,
+      A1SA12G == 3 ~ 4,
+      A1SA12G == 4 ~ 3,
+      A1SA12G == 5 ~ 2,
+      A1SA12G == 6 ~ 1,
+      T ~ NA
+    ),
+    char_SleepProblems = zscore_median_impute(char_SleepProblems), # z-scored and median imputed
+    # Adulthood Social Connections
+    char_HistOfDivorce = case_when(
+      A1PB17 == 3 | A1PB20 == 2~ 1,
+      T ~ -1
+    ),
+    char_NeverMarried = case_when(
+      A1PB17 == 5 ~ 1,
+      T ~ -1
+    ),
+    rev_A1SKINPO = (4 + 1) - A1SKINPO, # reverse coded
+    char_LowerPosIntWithFamily = zscore_median_impute(rev_A1SKINPO), # z-scored and median imputed
+    char_NegIntWithFamily = zscore_median_impute(A1SKINNE),
+    rev_A1SFDSPO = (4 + 1) - A1SFDSPO, # reverse coded
+    char_LowerPosIntWithFriends = zscore_median_impute(rev_A1SFDSPO), # z-scored and median imputed
+    char_NegIntWithFriends = zscore_median_impute(A1SFDSNE), # z-scored and median imputed
+    # Adulthood Psychological
+    rev_A1SAGREE = (4 + 1) - A1SAGREE, # reverse coded
+    char_LowerAgreeableness = zscore_median_impute(rev_A1SAGREE), # z-scored and median imputed
+    rev_A1SEXTRA = (4 + 1) - A1SEXTRA, # reverse coded
+    char_LowerExtroversion = zscore_median_impute(rev_A1SEXTRA), # z-scored and median imputed
+    rev_A1SNEURO = (4 + 1) - A1SNEURO, # reverse coded
+    char_LowerNeuroticism = zscore_median_impute(rev_A1SNEURO), # z-scored and median imputed
+    rev_A1SCONS = (4 + 1) - A1SCONS, # reverse coded
+    char_LowerConscientiousness = zscore_median_impute(rev_A1SCONS), # z-scored and median imputed
+    rev_A1SOPEN = (4 + 1) - A1SOPEN, # reverse coded
+    char_OppennessToExperiences = zscore_median_impute(rev_A1SOPEN), # z-scored and median imputed
+    char_Holepessness = case_when(
+      A1SA13D == 1 ~ 5, 
+      A1SA13D == 2 ~ 4, 
+      A1SA13D == 3 ~ 3,
+      A1SA13D == 4 ~ 2,
+      A1SA13D == 5 ~ 1,
+      T ~ NA
+    ),
+    char_Holepessness = zscore_median_impute(char_Holepessness),
+    char_LowerLifeSatisfaction = case_when(
+      A1PD1 == 4 ~ 4, 
+      A1PD1 == 3 ~ 3,
+      A1PD1 == 2 ~ 2, 
+      A1PD1 == 1 ~ 1,
+      T ~ NA
+    ),
+    char_LowerLifeSatisfaction = zscore_median_impute(char_LowerLifeSatisfaction), # z-scored and median imputed
+    char_LowerOptimism = case_when(
+      A1PD7 == 4 ~ 4, 
+      A1PD7 == 3 ~ 3,
+      A1PD7 == 2 ~ 2, 
+      A1PD7 == 1 ~ 1,
+      T ~ NA
+    ),
+    char_LowerOptimism = zscore_median_impute(char_LowerOptimism), # z-scored and median imputed
+    rev_A1SPOSAF = (5 + 1) - A1SPOSAF, # reverse coded
+    char_LowerPosAffectivity = zscore_median_impute(rev_A1SPOSAF), # z-scored and median imputed
+    char_NegAffectivity = zscore_median_impute(A1SNEGAF), # z-scored and median imputed
+    rev_A1SPWBU = (21 + 1) - A1SPWBU, # reverse coded
+    char_LowerPurposeInLife = zscore_median_impute(rev_A1SPWBU), # z-scored and median imputed
+    char_LowerReligiosity = case_when(
+      A1SR2A == 4 ~ 4,
+      A1SR2A == 3 ~ 3,
+      A1SR2A == 2 ~ 2, 
+      A1SR2A == 1 ~ 1,
+      T ~ NA
+    ),
+    char_LowerReligiosity = zscore_median_impute(char_LowerReligiosity), # z-scored and median imputed
+    rev_A1SPWBE = (21 + 1) - A1SPWBE, # reverse coded
+    char_LowerSenseOfMastery = zscore_median_impute(rev_A1SPWBE), # z-scored and median imputed
+    # Adulthood Adverse Experiences
+    rev_A1SS14A = (4 + 1) - A1SS14A,
+    rev_A1SS14B = (4 + 1) - A1SS14B,
+    rev_A1SS14C = (4 + 1) - A1SS14C,
+    rev_A1SS14D = (4 + 1) - A1SS14D,
+    rev_A1SS14E = (4 + 1) - A1SS14E,
+    rev_A1SS14I = (4 + 1) - A1SS14I,
+    
+  ) %>%
+  group_by(M2ID) %>%
+  mutate(
+    char_DailyDiscrimination = sum(
+      rev_A1SS14A, rev_A1SS14B, rev_A1SS14C, rev_A1SS14D, rev_A1SS14E, rev_A1SS14I,
+      na.rm = T
+      ),
+    char_MajorDiscrimination = sum(
+      pmin(A1SS13E, 5),
+      pmin(A1SS13C, 5),
+      pmin(A1SS13D, 5),
+      pmin(A1SS13F, 5),
+      pmin(A1SS13I, 5),
+      pmin(A1SS13H, 5),
+      na.rm = TRUE
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    char_DailyDiscrimination = zscore_median_impute(char_DailyDiscrimination), # z-scored and median imputed
+    char_MajorDiscrimination = zscore_median_impute(char_MajorDiscrimination) # z-scored and median imputed
+  )
+```
+### Understand the Distribution of Features
+```{r}
+data %>%
+  select(DECEASED, Max_Age, starts_with("char_"))
+```
+### Understand the Nature and Strength of Feature Relationships
+```{r}
+data %>%
+  select(starts_with("char_")) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  round(2) %>%
+  view()
+```
+### Save
+```{r}
+write.csv(
+  data %>% select(DECEASED, Max_Age, starts_with("char_")),
+  "survey_1_feature_data.csv"
+  )
+```
+

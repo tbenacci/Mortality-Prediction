@@ -1,0 +1,97 @@
+---
+title: "predicting mortality"
+author: "Thomas Benacci"
+date: "2025-11-20"
+output: html_document
+---
+
+### Libraries
+```{r, include=FALSE}
+library(tidyverse)
+library(survival)
+library(ranger)
+library(ggplot2)
+library(dplyr)
+library(ggfortify)
+library(data.table)
+```
+### Data
+```{r}
+data <- fread(
+  "Survey_1_feature_data.csv",
+  data.table = F
+)
+```
+### Kaplan-Meier Survival Curve
+```{r}
+km_fit <- survfit(Surv(Max_Age, DECEASED) ~ 1, data = data)
+
+# Plot with ggplot2 (super simple)
+autoplot(km_fit) +
+  labs(
+    title = "Kaplan–Meier Survival Curve",
+    x = "Age",
+    y = "Survival Probability"
+  ) +
+  theme_minimal()
+```
+### Fit Cox Proportional Hazards Model
+```{r}
+# Fit Cox proportional hazards model
+cox_model <- coxph(
+  Surv(Max_Age, DECEASED) ~ .,
+  data = dplyr::select(data, Max_Age, DECEASED, dplyr::starts_with("char_"))
+)
+#
+model_summary <- summary(cox_model)
+# Extract coefficient table
+coef_table <- model_summary$coefficients
+# order the coefficients greatest to least
+sorted_table <- coef_table[order(coef_table[, "coef"], decreasing = TRUE), ]
+# show it
+sorted_table
+# confidence intervals
+ci_table <- model_summary$conf.int
+# order the confidence interval table
+sorted_ci_table <- ci_table[order(ci_table[, "exp(coef)"], decreasing = TRUE), ]
+# show the ci table
+sorted_ci_table
+```
+
+### Predict Someone's Mortality (yes I know it's from the training set)
+```{r}
+set.seed(100)
+# Pick a random LIVING row of a non-smoker
+new_obs <- data %>%
+  filter(DECEASED == 0, char_CurrentSmoker == -1, char_HistOfSmoking == -1) %>%
+  slice_sample(n = 1)
+# Predict survival curve
+surv_curve <- survfit(cox_model, newdata = new_obs)
+# Convert S(t) -> probability of dying at age t
+times <- surv_curve$time
+S     <- surv_curve$surv
+# Probability of death at each interval: P(T = t) = S(t) - S(t+1)
+death_probs <- S[-length(S)] - S[-1]
+
+death_dist <- data.frame(
+  age = times[-length(times)],
+  prob_death_at_age = death_probs
+)
+# Normalize just in case
+death_dist$prob_death_at_age <- death_dist$prob_death_at_age /
+                                sum(death_dist$prob_death_at_age)
+# Compute cumulative probability of death by age
+death_dist <- death_dist %>%
+  arrange(age) %>%
+  mutate(cum_prob = cumsum(prob_death_at_age))
+# Plot cumulative probability curve
+ggplot(death_dist, aes(x = age, y = cum_prob)) +
+  geom_line() +
+  labs(
+    title = "Cumulative Probability of Death by Age",
+    x = "Age",
+    y = "Cumulative Probability"
+  ) +
+  theme_minimal()
+```
+
