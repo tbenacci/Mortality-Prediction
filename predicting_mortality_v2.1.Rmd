@@ -1,0 +1,339 @@
+---
+title: "Predicting Mortality with Survival Analysis"
+author: "Thomas Benacci"
+date: "2025-11-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## 1. Introduction
+
+This analysis explores mortality prediction using survival analysis. We use two main approaches:
+
+- Kaplan-Meier estimation: A non-parametric method to estimate survival probability over time.
+- Cox Proportional Hazards model: A regression approach that identifies which factors predict mortality.
+
+### 1.1 Why Survival Analysis?
+
+Standard regression techniques (OLS, logistic regression) are poorly suited for mortality data because they cannot handle censoring, which is the situation where we don't observe the event of interest for all subjects (death). In the study, many participants are still alive at the end of the observation period.
+
+Mathematically, for a censored observation, we only know that $T_i > C_i$, where $T_i$ is the (unobserved) true survival time and $C_i$ is the censoring time. Getting rid of these observations would bias the results toward shorter survival times; treating "alive" as "survived forever" would bias toward longer times. Survival analysis correctly incorporates this partial information.
+
+### 1.2 Key Concepts
+
+**Survival function** $S(t)$: The probability of surviving beyond time $t$:
+$$S(t) = P(T > t) = 1 - F(t)$$
+where $F(t)$ is the cumulative distribution function of survival time.
+
+**Hazard function** $h(t)$: The instantaneous risk of the event at time $t$, given survival up to that point:
+$$h(t) = \lim_{\Delta t \to 0} \frac{P(t \leq T < t + \Delta t \mid T \geq t)}{\Delta t}$$
+
+Hazard answers: "Given that someone has survived to age $t$, what is their instantaneous risk of dying right now?" The hazard can increase, decrease, or remain constant over time depending on the phenomenon being studied.
+
+Survival and hazard functions are related:
+$$S(t) = \exp\left(-\int_0^t h(u) \, du\right) = \exp(-H(t))$$
+where $H(t) = \int_0^t h(u) \, du$ is the **cumulative hazard**.
+
+## 2. Libraries
+
+```{r libraries}
+library(tidyverse)
+library(survival)
+library(ranger)
+library(ggplot2)
+library(dplyr)
+library(ggfortify)
+library(data.table)
+```
+
+## 3. Data
+
+```{r load-data}
+data <- fread("Survey_1_feature_data.csv", data.table = FALSE)
+# Quick look at the dataset
+cat("Observations:", nrow(data), "\n")
+cat("Features:", ncol(data), "\n")
+cat("Deaths observed:", sum(data$DECEASED), "\n")
+cat("Censored (alive):", sum(data$DECEASED == 0), "\n")
+cat("Mortality rate:", round(mean(data$DECEASED) * 100, 1), "%\n")
+```
+
+The censoring rate is `r round((1 - mean(data$DECEASED)) * 100, 1)`%, meaning we observe death for only about `r round(mean(data$DECEASED) * 100, 1)`% of the sample. This underscores why proper survival methods are essential—standard regression would either discard two-thirds of our data or treat it incorrectly.
+
+### 3.1 Age Distribution
+
+```{r age-distribution}
+# Visualize age distribution by survival status
+ggplot(data, aes(x = Max_Age, fill = factor(DECEASED, labels = c("Alive", "Deceased")))) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+  scale_fill_manual(values = c("Alive" = "steelblue", "Deceased" = "tomato")) +
+  labs(title = "Age Distribution by Survival Status",
+       x = "Age", y = "Count", fill = "Status") +
+  theme_minimal()
+```
+
+## 4. Kaplan-Meier Survival Curve
+
+### 4.1 The Estimator
+
+The Kaplan-Meier (KM) estimator is a non-parametric maximum likelihood estimate of the survival function. It makes no assumptions about the underlying distribution of survival times—it simply lets the data speak.
+
+At each observed death time $t_j$, the KM estimator calculates:
+$$\hat{S}(t) = \prod_{t_j \leq t} \left(1 - \frac{d_j}{n_j}\right)$$
+
+where:
+
+- $d_j$ = number of deaths at time $t_j$
+- $n_j$ = number of individuals "at risk" just before time $t_j$ (alive and uncensored)
+
+At each death time, the running survival probability is multiplied by the conditional probability of surviving that moment, given survival up to that point. 
+
+For example, if 100 people are at risk at age 75 and 3 die, the conditional survival probability at age 75 is $(1 - 3/100) = 0.97$. The cumulative survival probability is the product of all these conditional probabilities spaced at equal time intervals.
+
+Censored observations contribute to the "at risk" count $n_j$ until they are censored, then drop out. This is how the KM estimator correctly handles partial information. Censored individuals contribute what we know, their survival until censoring, without assuming anything about what we don't know.
+
+```{r kaplan-meier}
+# Fit KM curve
+# Max_Age = time variable (age at death or last observation)
+# DECEASED = event indicator (1 = died, 0 = censored/still alive)
+km_fit <- survfit(Surv(Max_Age, DECEASED) ~ 1, data = data)
+# summary at key ages
+summary(km_fit, times = seq(50, 90, 10))
+```
+
+### 4.2 Interpreting the Output
+
+The survival probabilities above represent $\hat{S}(t)$ at each age. For instance, if $\hat{S}(70) = 0.866$, we estimate that 86.6% of individuals survive beyond age 70. The standard error quantifies uncertainty in this estimate, which increases at later ages as fewer individuals remain at risk.
+
+```{r km-plot}
+# Plot the survival curve
+autoplot(km_fit, conf.int = TRUE) +
+  labs(title = "Kaplan–Meier Survival Curve",
+       x = "Age",
+       y = "Survival Probability S(t)") +
+  theme_minimal()
+```
+
+The shaded region shows the 95% confidence interval, computed using Greenwood's formula for the variance of $\hat{S}(t)$:
+$$\widehat{\text{Var}}[\hat{S}(t)] = \hat{S}(t)^2 \sum_{t_j \leq t} \frac{d_j}{n_j(n_j - d_j)}$$
+
+The confidence band widens at older ages because fewer observations remain, increasing uncertainty.
+
+## 5. Cox Proportional Hazards Model
+
+### 5.1 Model Specification
+
+While Kaplan-Meier describes overall survival, the Cox Proportional Hazards model (Cox, 1972) lets us examine *which factors* predict mortality. The model specifies:
+
+$$h(t \mid \mathbf{X}) = h_0(t) \cdot \exp(\beta_1 X_1 + \beta_2 X_2 + \cdots + \beta_p X_p)$$
+
+where:
+
+- $h(t \mid \mathbf{X})$ is the hazard at time $t$ for an individual with covariates $\mathbf{X}$
+- $h_0(t)$ is the **baseline hazard**—the hazard when all covariates equal zero
+- $\exp(\beta_j)$ is the **hazard ratio** for covariate $X_j$
+
+**The Proportional Hazards Assumption**: The model assumes that covariates multiply the hazard by a constant factor across all time points. Mathematically, the hazard ratio between any two individuals remains constant over time:
+$$\frac{h(t \mid \mathbf{X}_1)}{h(t \mid \mathbf{X}_2)} = \frac{h_0(t) \exp(\boldsymbol{\beta}' \mathbf{X}_1)}{h_0(t) \exp(\boldsymbol{\beta}' \mathbf{X}_2)} = \exp(\boldsymbol{\beta}'(\mathbf{X}_1 - \mathbf{X}_2))$$
+
+The baseline hazard $h_0(t)$ cancels out, leaving a ratio that depends only on the covariates—not on time. This is both a strength (we don't need to specify the baseline hazard's functional form) and a limitation (the assumption may not hold for all predictors).
+
+### 5.2 Partial Likelihood Estimation
+
+A remarkable feature of the Cox model is that we can estimate the $\beta$ coefficients *without* estimating the baseline hazard $h_0(t)$. Cox's partial likelihood considers only the *ordering* of events, not their exact timing.
+
+At each death time $t_j$, the partial likelihood contribution is the probability that the individual who died was the one to die, among all those at risk:
+
+$$L(\boldsymbol{\beta}) = \prod_{j: \text{ uncensored}} \frac{\exp(\boldsymbol{\beta}' \mathbf{X}_j)}{\sum_{k \in R_j} \exp(\boldsymbol{\beta}' \mathbf{X}_k)}$$
+
+where $R_j$ is the **risk set** at time $t_j$ (everyone still alive and uncensored just before $t_j$).
+
+**Intuition**: If smoking increases mortality risk, then at each death time, the smokers in the risk set should be more likely to be the one who died. The partial likelihood formalizes this: it's maximized when high-risk individuals (according to $\boldsymbol{\beta}'\mathbf{X}$) are indeed the ones experiencing events.
+
+```{r cox-model}
+# Fit Cox model using all characteristic variables as predictors
+cox_model <- coxph(
+  Surv(Max_Age, DECEASED) ~ .,
+  data = dplyr::select(data, Max_Age, DECEASED, dplyr::starts_with("char_"))
+)
+
+model_summary <- summary(cox_model)
+```
+
+### 5.3 Model Performance
+
+```{r performance}
+# Key performance metrics
+cat("=== Model Performance ===\n\n")
+
+# Concordance index (C-statistic): probability that the model correctly
+# ranks a random pair of subjects. 0.5 = random, 1.0 = perfect
+cat("Concordance Index:", round(model_summary$concordance[1], 4), "\n")
+cat("  (SE:", round(model_summary$concordance[2], 4), ")\n\n")
+
+# Interpretation guide
+cat("C-statistic interpretation:\n")
+cat("  0.5 = no better than random\n")
+cat("  0.6-0.7 = poor discrimination\n")
+cat("  0.7-0.8 = acceptable\n")
+cat("  0.8-0.9 = excellent\n")
+cat("  >0.9 = outstanding\n\n")
+
+# Overall model significance tests
+cat("Likelihood Ratio Test: chi-sq =", round(model_summary$logtest[1], 2),
+    ", p =", format.pval(model_summary$logtest[3], digits = 3), "\n")
+cat("Wald Test: chi-sq =", round(model_summary$waldtest[1], 2),
+    ", p =", format.pval(model_summary$waldtest[3], digits = 3), "\n")
+cat("Score (Logrank) Test: chi-sq =", round(model_summary$sctest[1], 2),
+    ", p =", format.pval(model_summary$sctest[3], digits = 3), "\n\n")
+
+# R-squared
+cat("R-squared:", round(model_summary$rsq[1], 4),
+    "(max possible:", round(model_summary$rsq[2], 4), ")\n")
+cat("n =", model_summary$n, "observations,", model_summary$nevent, "events\n")
+```
+
+The concordance index measures the model's ability to correctly rank pairs of individuals by risk. For every pair where we can determine who died first, we check whether the model assigned higher risk to that person:
+
+$$C = \frac{\text{# concordant pairs} + 0.5 \times \text{# tied pairs}}{\text{# usable pairs}}$$
+
+A concordant pair is one where the individual with higher predicted risk ($\hat{\beta}'\mathbf{X}$) experienced the event first. A C-statistic of 0.6893 means that, given two random individuals where one died before the other, there's a ~69% chance our model correctly identified who was at higher risk.
+
+The below tests assess whether the model as a whole is significant (i.e., whether at least one $\beta_j \neq 0$):
+
+- Likelihood Ratio Test: Compares the log-likelihood of the fitted model to a null model with no predictors. Generally the most reliable.
+- Wald Test: Based on the squared distance of estimated coefficients from zero, weighted by their precision.
+- Score Test: Based on the slope of the log-likelihood at the null hypothesis. Computationally convenient but less robust.
+
+The results of all three tests indicate a strong rejection of the null hypothesis. 
+
+### 5.4 Coefficient Table
+
+Coefficients represent log hazard ratios. To interpret them:
+
+- $\beta_j > 0$ -> $\exp(\beta_j) > 1$ -> Increased mortality risk
+- $\beta_j < 0$ -> $\exp(\beta_j) < 1$ ->Decreased mortality risk (protective)
+- $\beta_j = 0$ -> $\exp(\beta_j) = 1$ -> No effect
+
+For a one-unit increase in $X_j$ (holding other variables constant), the hazard is multiplied by $\exp(\beta_j)$. Example: if $\beta_{\text{smoking}} = 0.33$, then $\text{HR} = \exp(0.33) = 1.39$, meaning smokers have 39% higher instantaneous mortality risk than non-smokers at any given age.
+
+```{r coefficients}
+# Extract and sort coefficients by effect size
+coef_table <- model_summary$coefficients
+sorted_table <- coef_table[order((coef_table[, "coef"]), decreasing = TRUE), ]
+# Show top predictors
+sorted_table
+```
+
+### 5.5 Confidence Interval Plot
+
+Visual display of hazard ratios for the strongest predictors.
+
+```{r CI-plot, fig.height=7}
+# Get top 10 predictors by significance
+coef_df <- data.frame(
+  variable = rownames(coef_table),
+  hr = model_summary$conf.int[, "exp(coef)"],
+  lower = model_summary$conf.int[, "lower .95"],
+  upper = model_summary$conf.int[, "upper .95"],
+  pval = coef_table[, "Pr(>|z|)"]
+)
+# filter to significant predictors and take top 10
+plot_data <- coef_df %>%
+  # only consider p-value < 5% coefficients
+  filter(pval < 0.05) %>%
+  arrange(pval) %>%
+  head(10)
+if(nrow(plot_data) > 0) {
+  ggplot(plot_data, aes(x = hr, y = reorder(variable, hr))) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "gray50") +
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2) +
+    geom_point(aes(color = hr > 1), size = 3) +
+    scale_color_manual(values = c("TRUE" = "tomato", "FALSE" = "steelblue"),
+                       labels = c("Protective", "Risk Factor")) +
+    scale_x_log10() +
+    labs(title = "Hazard Ratios (95% CI) for Significant Predictors",
+         x = "Hazard Ratio (log scale)", y = "", color = "") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+} else {
+  cat("No predictors significant at p < 0.05")
+}
+```
+
+The top 10 predictors seem to fit conventional wisdom and nothing too surprising is present. 
+
+## 6. Risk Stratification
+
+### 6.1 Purpose and Approach
+
+To validate the model's predictive utility, we stratify the population into risk groups based on their predicted hazard scores. This approach serves as a calibration check: if the Cox model captures meaningful mortality risk, individuals classified as "high risk" should exhibit substantially lower survival probabilities than those classified as "low risk," with intermediate groups falling in between. While hazard ratios quantify the relative contribution of individual predictors, stratification illustrates how the cumulative burden of risk factors translates into divergent survival trajectories at the population level.
+
+### 6.2 The Linear Predictor
+
+The Cox model produces a **linear predictor** (also called the prognostic index or risk score) for each individual:
+
+$$\eta_i = \hat{\beta}_1 X_{i1} + \hat{\beta}_2 X_{i2} + \cdots + \hat{\beta}_p X_{ip} = \hat{\boldsymbol{\beta}}' \mathbf{X}_i$$
+
+This score summarizes each person's overall risk profile into a single number. Higher values indicate higher mortality risk. Importantly, this is a relative measure. It tells us who is at higher or lower risk than average, but not the absolute probability of death at any given time (which would require estimating the baseline hazard).
+
+We divide the sample into quartiles based on $\eta_i$, creating four groups with roughly equal sizes but systematically different risk profiles.
+
+```{r risk-groups}
+# Create a subset of data with only complete cases used by the Cox model
+model_data <- dplyr::select(data, Max_Age, DECEASED, dplyr::starts_with("char_"))
+complete_idx <- complete.cases(model_data)
+cat("Rows in original data:", nrow(data), "\n")
+cat("Rows used by Cox model:", sum(complete_idx), "\n")
+cat("Rows dropped (missing values):", sum(!complete_idx), "\n\n")
+# use only complete cases only for risk stratification
+data_complete <- data[complete_idx, ]
+# calculate risk score for complete cases
+data_complete$risk_score <- predict(cox_model, type = "lp")
+# Split into quartiles
+data_complete$risk_group <- cut(data_complete$risk_score,
+                                breaks = quantile(data_complete$risk_score, probs = c(0, 0.25, 0.5, 0.75, 1)),
+                                labels = c("Low", "Medium-Low", "Medium-High", "High"),
+                                include.lowest = TRUE)
+# Summary by group
+data_complete %>%
+  group_by(risk_group) %>%
+  summarise(
+    n = n(),
+    deaths = sum(DECEASED),
+    mortality_rate = round(mean(DECEASED) * 100, 1),
+    mean_age = round(mean(Max_Age), 1)
+  )
+```
+
+### 6.3 Stratified Survival Curves
+
+If the model has good discriminative ability, the Kaplan-Meier curves for each risk group should separate clearly and maintain that separation throughout the follow-up period. Crossing or converging curves would suggest the model fails to identify durable risk differences.
+
+```{r stratified-km}
+# Kaplan-Meier curves by risk group
+km_by_risk <- survfit(Surv(Max_Age, DECEASED) ~ risk_group, data = data_complete)
+# Plot
+autoplot(km_by_risk) +
+  labs(title = "Survival by Risk Group",
+       subtitle = "Groups based on Cox model risk score quartiles",
+       x = "Age", y = "Survival Probability S(t)") +
+  theme_minimal()
+```
+
+Our model approach appears to succeed in its ability to delineate between distinct groups at risk of mortality. The clear separation between quartiles demonstrates that the linear combination of predictors captures meaningful heterogeneity in mortality risk.
+
+## 7. Conclusion
+
+This analysis demonstrates the application of survival analysis to mortality prediction:
+
+1. Kaplan-Meier estimation provided a non-parametric view of overall survival, properly accounting for censored observations through the product-limit estimator.
+
+2. Cox proportional hazards regression identified which factors predict mortality risk while elegantly avoiding the need to specify the baseline hazard function.
+
+3. Model performance was assessed via the concordance index (discrimination) and likelihood-based tests (overall significance).
+
+4. Risk stratification validated that the model's linear predictor meaningfully separates high- and low-risk individuals, with survival curves that diverge early and maintain separation.
