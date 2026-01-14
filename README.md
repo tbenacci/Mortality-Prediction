@@ -1,0 +1,1 @@
+This project was done out of interest in estimating a factor-driven mortality hazard function for use in a customizable portfolio that mimics the rebalancing of a common target date fund (TDF). It was heavily inspired by the paper by Puterman et al. and uses the [MIDUS](https://midus.wisc.edu/) demographic survey data. 
