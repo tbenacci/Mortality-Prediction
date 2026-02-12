@@ -1,0 +1,340 @@
+---
+title: "My Mortality Prediction"
+author: "Thomas Benacci"
+date: "2025-11-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(survival)
+library(ggplot2)
+library(data.table)
+```
+
+# Load Saved Model and Raw Training Data
+
+```{r}
+cox_model <- readRDS("cox_mortality_model.rds")
+var_names <- readRDS("model_variable_names.rds")
+raw_data  <- fread("survey_1_raw_data.csv", data.table = FALSE)
+
+predictor_vars <- var_names$predictor_vars
+demo_vars      <- var_names$demo_vars
+
+cat("Model loaded. Predictors:", length(predictor_vars), "\n")
+cat("Raw training data:", nrow(raw_data), "rows\n")
+```
+
+# ============================================================
+# FILL IN YOUR ANSWERS BELOW
+# ============================================================
+
+## Demographics
+
+```{r}
+my_age <- 30
+my_sex <- "Male"
+my_race <- "White"
+my_born_in_us <- "Yes"
+```
+
+## Childhood Adversity
+
+```{r}
+my_father_occupation <- "Professional"
+my_mother_occupation <- "Other"
+my_father_education <- "Bachelor's degree or higher"
+my_mother_education <- "GED / High school diploma"
+```
+
+## Adulthood Socioeconomic
+
+```{r}
+##############################################################
+# note: discount to 1995/1996 due to wag growth and inflation
+my_household_income <- 75000  
+my_net_worth <- "$100,000 - $199,999"
+##############################################################
+my_education <- "Bachelor's degree or higher"
+my_occupation <- "Professional"
+my_financial_difficulty <- "Not very difficult"
+my_unemployed <- "No"
+my_renting <- "No"
+my_medicaid <- "No"
+my_neighborhood <- "Good"
+```
+
+## Adulthood Health Behaviors
+
+```{r}
+my_alcohol_abuse <- "No"
+my_current_smoker <- "No"
+my_ever_smoked <- "No"
+my_moderate_activity <- 12
+my_vigorous_activity <- 8
+my_sleep_problems <- "Once a month"
+```
+
+## Adulthood Social Connections
+
+```{r}
+my_marital_status <- "Never married"
+my_first_marriage_divorce <- "N/A"
+my_family_support <- 3
+my_family_strain <- 2
+my_friend_support <- 3
+my_friend_strain <- 1
+```
+
+## Adulthood Psychological
+
+```{r}
+my_agreeableness <- 3
+my_extraversion <- 2
+my_neuroticism <- 2
+my_conscientiousness <- 3
+my_openness <- 3
+my_hopelessness <- "None of the time"
+my_life_satisfaction <- "Somewhat"
+my_optimism <- "Somewhat"
+my_positive_affect <- 4
+my_negative_affect <- 2
+my_purpose_in_life <- 18
+my_religiosity <- "A little"
+my_mastery <- 16
+```
+
+## Adulthood Adverse Experiences
+
+```{r}
+my_disc_a <- 1; my_disc_b <- 1; my_disc_c <- 1
+my_disc_d <- 1; my_disc_e <- 1; my_disc_i <- 1
+my_major_a <- 0; my_major_b <- 0; my_major_c <- 0
+my_major_d <- 0; my_major_e <- 0; my_major_f <- 0
+```
+
+# ============================================================
+# PROCESSING
+# ============================================================
+
+```{r}
+father_edu_raw <- switch(my_father_education,
+  "No school / Some grade school" = 3, "Some high school" = 3,
+  "GED / High school diploma" = 2, "Some college / Associate's degree" = 1,
+  "Bachelor's degree or higher" = 0)
+mother_edu_raw <- switch(my_mother_education,
+  "No school / Some grade school" = 3, "Some high school" = 3,
+  "GED / High school diploma" = 2, "Some college / Associate's degree" = 1,
+  "Bachelor's degree or higher" = 0)
+wealth_raw <- switch(my_net_worth,
+  "Less than $0" = 36, "$0" = 35, "$1 - $4,999" = 31,
+  "$5,000 - $9,999" = 26, "$10,000 - $19,999" = 22,
+  "$20,000 - $49,999" = 13, "$50,000 - $99,999" = 8,
+  "$100,000 - $199,999" = 5.5, "$200,000 - $499,999" = 3.5,
+  "$500,000 - $999,999" = 2, "$1,000,000 or more" = 1)
+edu_raw <- switch(my_education,
+  "Some high school or less" = 4, "GED / High school diploma" = 3,
+  "Some college" = 2, "Bachelor's degree or higher" = 1)
+fin_diff_raw <- switch(my_financial_difficulty,
+  "Not at all difficult" = 1, "Not very difficult" = 2,
+  "Somewhat difficult" = 3, "Very difficult" = 4)
+neigh_raw <- switch(my_neighborhood,
+  "Excellent" = 4, "Good" = 3, "Fair" = 2, "Poor" = 1)
+sleep_raw <- switch(my_sleep_problems,
+  "Not at all" = 1, "Once a month" = 2, "Several times a month" = 3,
+  "Once a week" = 4, "Several times a week" = 5, "Almost every day" = 6)
+hopeless_raw <- switch(my_hopelessness,
+  "None of the time" = 1, "A little of the time" = 2,
+  "Some of the time" = 3, "Most of the time" = 4, "All of the time" = 5)
+life_sat_raw <- switch(my_life_satisfaction,
+  "A lot" = 1, "Somewhat" = 2, "A little" = 3, "Not at all" = 4)
+optimism_raw <- switch(my_optimism,
+  "A lot" = 1, "Somewhat" = 2, "A little" = 3, "Not at all" = 4)
+religiosity_raw <- switch(my_religiosity,
+  "A lot" = 1, "Somewhat" = 2, "A little" = 3, "Not at all" = 4)
+is_divorced <- (my_marital_status %in% c("Divorced", "Separated") |
+                (!is.na(my_first_marriage_divorce) & my_first_marriage_divorce == "Yes"))
+daily_disc_sum <- (5-my_disc_a) + (5-my_disc_b) + (5-my_disc_c) +
+                  (5-my_disc_d) + (5-my_disc_e) + (5-my_disc_i)
+major_disc_sum <- min(my_major_a,5) + min(my_major_b,5) + min(my_major_c,5) +
+                  min(my_major_d,5) + min(my_major_e,5) + min(my_major_f,5)
+
+my_raw <- data.frame(
+  M2ID = NA, M2FAMNUM = NA, SAMPLMAJ = NA,
+  DECEASED = 0, Max_Age = my_age,
+  raw_Age = my_age,
+  raw_Male = ifelse(my_sex == "Male", 1, -1),
+  raw_Black = ifelse(my_race == "Black", 1, -1),
+  raw_ForeignBorn = ifelse(my_born_in_us == "Yes", -1, 1),
+  raw_LowFatherOccStat = ifelse(my_father_occupation == "Professional", -1, 1),
+  raw_LowMotherOccStat = ifelse(my_mother_occupation == "Professional", -1, 1),
+  raw_LowFatherEdu = father_edu_raw,
+  raw_LowMotherEdu = mother_edu_raw,
+  raw_LowerIncome = (300001) - my_household_income,
+  raw_LowerWealth = wealth_raw,
+  raw_LowerEdu = edu_raw,
+  raw_LowerOccStat = ifelse(my_occupation == "Professional", -1, 1),
+  raw_RecentFinDiff = fin_diff_raw,
+  raw_HistOfUnemployment = ifelse(my_unemployed == "Yes", 1, -1),
+  raw_HistOfRenting = ifelse(my_renting == "Yes", 1, -1),
+  raw_HistOfMedicaid = ifelse(my_medicaid == "Yes", 1, -1),
+  raw_LowNeighborCohesion = 5 - neigh_raw,
+  raw_AlcoholAbuse = ifelse(my_alcohol_abuse == "Yes", 1, -1),
+  raw_CurrentSmoker = ifelse(my_current_smoker == "Yes", 1, -1),
+  raw_HistOfSmoking = ifelse(my_ever_smoked == "Yes", 1, -1),
+  raw_LowNoModActivity = ifelse(my_moderate_activity < 4, 1, -1),
+  raw_LowNoVigActivity = ifelse(my_vigorous_activity < 4, 1, -1),
+  raw_SleepProblems = sleep_raw,
+  raw_HistOfDivorce = ifelse(is_divorced, 1, -1),
+  raw_NeverMarried = ifelse(my_marital_status == "Never married", 1, -1),
+  raw_LowerPosIntWithFamily = 5 - my_family_support,
+  raw_NegIntWithFamily = my_family_strain,
+  raw_LowerPosIntWithFriends = 5 - my_friend_support,
+  raw_NegIntWithFriends = my_friend_strain,
+  raw_LowerAgreeableness = 5 - my_agreeableness,
+  raw_LowerExtroversion = 5 - my_extraversion,
+  raw_LowerNeuroticism = 5 - my_neuroticism,
+  raw_LowerConscientiousness = 5 - my_conscientiousness,
+  raw_LowerOpennessToExperiences = 5 - my_openness,
+  raw_Hopelessness = hopeless_raw,
+  raw_LowerLifeSatisfaction = life_sat_raw,
+  raw_LowerOptimism = optimism_raw,
+  raw_LowerPosAffectivity = 6 - my_positive_affect,
+  raw_NegAffectivity = my_negative_affect,
+  raw_LowerPurposeInLife = 22 - my_purpose_in_life,
+  raw_LowerReligiosity = religiosity_raw,
+  raw_LowerSenseOfMastery = 22 - my_mastery,
+  raw_DailyDiscrimination = daily_disc_sum,
+  raw_MajorDiscrimination = major_disc_sum,
+  stringsAsFactors = FALSE
+)
+```
+
+# Z-Score Together with Training Data
+
+```{r}
+combined <- bind_rows(raw_data, my_raw)
+my_idx <- nrow(combined)
+
+zscore_median_impute <- function(x){
+  z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+  med <- median(z, na.rm = TRUE)
+  z[is.na(z)] <- med
+  return(z)
+}
+
+combined <- combined %>%
+  mutate(
+    char_Age = zscore_median_impute(raw_Age),
+    char_LowFatherEdu = zscore_median_impute(raw_LowFatherEdu),
+    char_LowMotherEdu = zscore_median_impute(raw_LowMotherEdu),
+    char_LowerIncome = zscore_median_impute(raw_LowerIncome),
+    char_LowerWealth = zscore_median_impute(raw_LowerWealth),
+    char_LowerEdu = zscore_median_impute(raw_LowerEdu),
+    char_RecentFinDiff = zscore_median_impute(raw_RecentFinDiff),
+    char_LowNeighborCohesion = zscore_median_impute(raw_LowNeighborCohesion),
+    char_SleepProblems = zscore_median_impute(raw_SleepProblems),
+    char_LowerPosIntWithFamily = zscore_median_impute(raw_LowerPosIntWithFamily),
+    char_NegIntWithFamily = zscore_median_impute(raw_NegIntWithFamily),
+    char_LowerPosIntWithFriends = zscore_median_impute(raw_LowerPosIntWithFriends),
+    char_NegIntWithFriends = zscore_median_impute(raw_NegIntWithFriends),
+    char_LowerAgreeableness = zscore_median_impute(raw_LowerAgreeableness),
+    char_LowerExtroversion = zscore_median_impute(raw_LowerExtroversion),
+    char_LowerNeuroticism = zscore_median_impute(raw_LowerNeuroticism),
+    char_LowerConscientiousness = zscore_median_impute(raw_LowerConscientiousness),
+    char_LowerOpennessToExperiences = zscore_median_impute(raw_LowerOpennessToExperiences),
+    char_Hopelessness = zscore_median_impute(raw_Hopelessness),
+    char_LowerLifeSatisfaction = zscore_median_impute(raw_LowerLifeSatisfaction),
+    char_LowerOptimism = zscore_median_impute(raw_LowerOptimism),
+    char_LowerPosAffectivity = zscore_median_impute(raw_LowerPosAffectivity),
+    char_NegAffectivity = zscore_median_impute(raw_NegAffectivity),
+    char_LowerPurposeInLife = zscore_median_impute(raw_LowerPurposeInLife),
+    char_LowerReligiosity = zscore_median_impute(raw_LowerReligiosity),
+    char_LowerSenseOfMastery = zscore_median_impute(raw_LowerSenseOfMastery),
+    char_DailyDiscrimination = zscore_median_impute(raw_DailyDiscrimination),
+    char_MajorDiscrimination = zscore_median_impute(raw_MajorDiscrimination),
+    char_Male = raw_Male,
+    char_Black = raw_Black,
+    char_ForeignBorn = raw_ForeignBorn,
+    char_LowFatherOccStat = raw_LowFatherOccStat,
+    char_LowMotherOccStat = raw_LowMotherOccStat,
+    char_LowerOccStat = raw_LowerOccStat,
+    char_HistOfUnemployment = raw_HistOfUnemployment,
+    char_HistOfRenting = raw_HistOfRenting,
+    char_HistOfMedicaid = raw_HistOfMedicaid,
+    char_AlcoholAbuse = raw_AlcoholAbuse,
+    char_CurrentSmoker = raw_CurrentSmoker,
+    char_HistOfSmoking = raw_HistOfSmoking,
+    char_LowNoModActivity = raw_LowNoModActivity,
+    char_LowNoVigActivity = raw_LowNoVigActivity,
+    char_HistOfDivorce = raw_HistOfDivorce,
+    char_NeverMarried = raw_NeverMarried
+  )
+
+my_obs <- combined[my_idx, , drop = FALSE]
+
+missing_vars <- setdiff(c(predictor_vars, demo_vars), names(my_obs))
+if (length(missing_vars) > 0) {
+  cat("WARNING - Missing:", paste(missing_vars, collapse = ", "), "\n")
+} else {
+  cat("All", length(c(predictor_vars, demo_vars)), "model variables present.\n")
+}
+```
+
+# Predict Survival Curve
+
+```{r, fig.width=9, fig.height=6}
+refit_and_predict <- function(saved_model, new_data) {
+  result <- tryCatch(survfit(saved_model, newdata = new_data), error = function(e) NULL)
+  if (!is.null(result)) return(result)
+  cat("Direct survfit failed - refitting...\n")
+  mf <- model.frame(saved_model)
+  refit <- coxph(formula(saved_model), data = mf, model = TRUE, x = TRUE)
+  survfit(refit, newdata = new_data)
+}
+
+surv_curve <- refit_and_predict(cox_model, as.data.frame(my_obs))
+times <- surv_curve$time
+S     <- surv_curve$surv
+
+ggplot(data.frame(age = times, surv = S), aes(x = age, y = surv)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey50") +
+  labs(title = "Your Predicted Survival Curve",
+       subtitle = "Cox PH model trained on MIDUS data",
+       x = "Age", y = "Survival Probability") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"))
+```
+
+# Cumulative Mortality
+
+```{r, fig.width=9, fig.height=6}
+death_probs <- S[-length(S)] - S[-1]
+death_dist <- data.frame(age = times[-length(times)], prob = death_probs) %>%
+  mutate(prob = prob / sum(prob)) %>%
+  arrange(age) %>%
+  mutate(cum_prob = cumsum(prob))
+
+median_age <- death_dist$age[which.min(abs(death_dist$cum_prob - 0.5))]
+cat("Estimated median age of death:", round(median_age, 1), "\n")
+
+ggplot(death_dist, aes(x = age, y = cum_prob)) +
+  geom_line(color = "firebrick", linewidth = 1.2) +
+  geom_vline(xintercept = median_age, linetype = "dashed", color = "grey40") +
+  annotate("text", x = median_age + 1, y = 0.55,
+           label = paste0("Median: ", round(median_age, 1)), hjust = 0, size = 4) +
+  labs(title = "Cumulative Probability of Death by Age",
+       x = "Age", y = "Cumulative Probability") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1)) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 16, face = "bold"))
+```
