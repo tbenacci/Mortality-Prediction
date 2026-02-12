@@ -338,3 +338,4 @@ ggplot(death_dist, aes(x = age, y = cum_prob)) +
   theme_minimal() +
   theme(plot.title = element_text(size = 16, face = "bold"))
 ```
+
